@@ -161,7 +161,7 @@ class TcrExtractorApp(tk.Tk):
     def _process(self, input_folder: str, output_file: str, debug_mode: bool) -> None:
         start_time = time.perf_counter()
         try:
-            log_file = Path(output_file).with_suffix(".log")
+            log_file = Path(output_file).with_name("extractor.log")
             logger = setup_logger(log_file)
 
             excel_files = find_excel_files(input_folder)
@@ -174,12 +174,24 @@ class TcrExtractorApp(tk.Tk):
             files_skipped = 0
             workbook_seconds_total = 0.0
 
-            self.after(0, lambda: self.progress.configure(maximum=max(total_files, 1)))
-            self.after(0, lambda: self._append_log(f"Found {total_files} Excel files."))
+            self.after(0, lambda t=total_files: self.progress.configure(maximum=max(t, 1)))
+            self.after(0, lambda t=total_files: self.files_processed_text.set(f"Files processed: 0/{t}"))
+            self.after(0, lambda t=total_files: self._append_log(f"Found {t} Excel files."))
+            self.after(0, lambda t=total_files: self.status_text.set(f"Files processed: 0/{t}"))
 
             for index, file_path in enumerate(excel_files, start=1):
-                self.after(0, lambda p=file_path: self._append_log(f"Processing: {p}"))
-                result = process_workbook(file_path, logger=logger, debug_mode=debug_mode)
+                self.after(0, lambda p=file_path, i=index, t=total_files: self._append_log(f"Processing {i}/{t}: {p}"))
+                self.after(0, lambda p=file_path, i=index, t=total_files: self.current_file_text.set(f"Current file: {p.name}"))
+                self.after(0, lambda i=index, t=total_files: self.status_text.set(f"Starting workbook {i}/{t}"))
+
+                def gui_step(message: str, i=index, t=total_files) -> None:
+                    self.after(0, lambda m=message, i=i, t=t: (
+                        self.status_text.set(m),
+                        self.files_processed_text.set(f"Files processed: {i - 1}/{t}"),
+                        self._append_log(m)
+                    ))
+
+                result = process_workbook(file_path, logger=logger, debug_mode=debug_mode, progress_callback=gui_step)
                 all_rows.extend(result.rows)
                 all_errors.extend(result.errors)
                 all_debug_records.extend(result.debug_records)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import load_workbook
 
@@ -20,6 +20,9 @@ from .utils import (
     first_non_empty,
     is_empty,
 )
+
+
+ProgressCallback = Callable[[str], None]
 
 
 def validate_row(row: dict[str, Any]) -> str:
@@ -100,11 +103,27 @@ def _worksheet_validation_status(rows: list[ExtractedRow], prior_status: str = "
     return "; ".join(statuses) if statuses else "OK"
 
 
-def process_workbook(path: str | Path, logger=None, debug_mode: bool = False) -> ProcessingResult:
+def _log_step(logger, workbook: Path, worksheet: str | None, message: str, callback: ProgressCallback | None = None) -> None:
+    """Log a diagnostic step and optionally notify the GUI."""
+    sheet_text = worksheet if worksheet else "-"
+    full_message = f"{message} | workbook={workbook.name} | worksheet={sheet_text}"
+    if logger:
+        logger.info(full_message)
+    if callback:
+        callback(full_message)
+
+
+def process_workbook(
+    path: str | Path,
+    logger=None,
+    debug_mode: bool = False,
+    progress_callback: ProgressCallback | None = None,
+) -> ProcessingResult:
     """Process a single workbook and never raise errors to the caller.
 
     Args:
         debug_mode: when True, populate worksheet-level diagnostics.
+        progress_callback: optional GUI callback for live diagnostics.
     """
     start = time.perf_counter()
     source_file = Path(path)
@@ -112,12 +131,14 @@ def process_workbook(path: str | Path, logger=None, debug_mode: bool = False) ->
 
     wb = None
     try:
+        _log_step(logger, source_file, None, "Opening workbook...", progress_callback)
         wb = load_workbook(source_file, data_only=True, read_only=True)
+        _log_step(logger, source_file, None, "Workbook opened.", progress_callback)
     except Exception as exc:
         err = ProcessingError(str(source_file), "", "Cannot open workbook", repr(exc))
         result.errors.append(err)
         if logger:
-            logger.exception("Cannot open workbook: %s", source_file)
+            logger.exception("Cannot open workbook | workbook=%s | worksheet=-", source_file.name)
         result.processing_seconds = time.perf_counter() - start
         return result
 
@@ -125,9 +146,15 @@ def process_workbook(path: str | Path, logger=None, debug_mode: bool = False) ->
         for ws in wb.worksheets:
             sheet_rows_before = len(result.rows)
             debug_record = DebugRecord(workbook=str(source_file), worksheet=ws.title)
+            _log_step(logger, source_file, ws.title, f"Processing worksheet: {ws.title}", progress_callback)
             try:
+                _log_step(logger, source_file, ws.title, "Reading header...", progress_callback)
                 header, detected_header_rows = read_header_info(ws)
+                _log_step(logger, source_file, ws.title, "Header finished.", progress_callback)
+
+                _log_step(logger, source_file, ws.title, "Detecting BOM...", progress_callback)
                 header_row, mapping, unmapped_headers, score, reasons, missing_columns = find_bom_table(ws)
+                _log_step(logger, source_file, ws.title, "BOM detected.", progress_callback)
 
                 debug_record.detected_header_row = detected_header_rows
                 debug_record.detected_bom_row = str(header_row or "")
@@ -148,24 +175,26 @@ def process_workbook(path: str | Path, logger=None, debug_mode: bool = False) ->
                     )
                     if logger:
                         logger.warning(
-                            "No BOM selected | file=%s | sheet=%s | best_score=%s | reasons=%s",
-                            source_file,
+                            "No BOM selected | workbook=%s | worksheet=%s | best_score=%s | reasons=%s",
+                            source_file.name,
                             ws.title,
                             score,
                             "; ".join(reasons),
                         )
+                    _log_step(logger, source_file, ws.title, "Worksheet finished.", progress_callback)
                     continue
 
                 if logger:
                     logger.info(
-                        "Selected BOM table | file=%s | sheet=%s | row=%s | confidence=%s | reasons=%s",
-                        source_file,
+                        "Selected BOM table | workbook=%s | worksheet=%s | row=%s | confidence=%s | reasons=%s",
+                        source_file.name,
                         ws.title,
                         header_row,
                         score,
                         "; ".join(reasons),
                     )
 
+                _log_step(logger, source_file, ws.title, "Reading BOM rows...", progress_callback)
                 extracted_count = 0
                 for source_row, bom_row in iter_bom_rows(ws, header_row, mapping):
                     result.rows.append(
@@ -177,6 +206,8 @@ def process_workbook(path: str | Path, logger=None, debug_mode: bool = False) ->
                         )
                     )
                     extracted_count += 1
+
+                _log_step(logger, source_file, ws.title, f"Rows exported: {extracted_count}", progress_callback)
 
                 for src_row, src_col, src_header, value in iter_unmapped_values(ws, header_row, unmapped_headers):
                     result.unmapped_columns.append(
@@ -195,10 +226,10 @@ def process_workbook(path: str | Path, logger=None, debug_mode: bool = False) ->
 
                 if logger and extracted_count:
                     logger.info(
-                        "Extracted %s rows from %s | sheet=%s | bom_row=%s | confidence=%s",
-                        extracted_count,
-                        source_file,
+                        "Extracted rows summary | workbook=%s | worksheet=%s | rows=%s | bom_row=%s | confidence=%s",
+                        source_file.name,
                         ws.title,
+                        extracted_count,
                         header_row,
                         score,
                     )
@@ -207,13 +238,15 @@ def process_workbook(path: str | Path, logger=None, debug_mode: bool = False) ->
                 debug_record.validation_status = "Sheet processing failed"
                 result.errors.append(ProcessingError(str(source_file), ws.title, "Sheet processing failed", repr(exc)))
                 if logger:
-                    logger.exception("Sheet failed: %s | %s", source_file, ws.title)
+                    logger.exception("Sheet failed | workbook=%s | worksheet=%s", source_file.name, ws.title)
             finally:
+                _log_step(logger, source_file, ws.title, "Worksheet finished.", progress_callback)
                 if debug_mode:
                     result.debug_records.append(debug_record)
 
         result.processed_successfully = len(result.rows) > 0
         result.processing_seconds = time.perf_counter() - start
+        _log_step(logger, source_file, None, "Workbook finished.", progress_callback)
         return result
 
     finally:
