@@ -181,7 +181,7 @@ class TcrExtractorApp(tk.Tk):
 
             for index, file_path in enumerate(excel_files, start=1):
                 self.after(0, lambda p=file_path, i=index, t=total_files: self._append_log(f"Processing {i}/{t}: {p}"))
-                self.after(0, lambda p=file_path, i=index, t=total_files: self.current_file_text.set(f"Current file: {p.name}"))
+                self.after(0, lambda p=file_path: self.current_file_text.set(f"Current file: {p.name}"))
                 self.after(0, lambda i=index, t=total_files: self.status_text.set(f"Starting workbook {i}/{t}"))
 
                 def gui_step(message: str, i=index, t=total_files) -> None:
