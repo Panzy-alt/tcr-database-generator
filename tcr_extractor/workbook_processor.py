@@ -25,6 +25,14 @@ from .utils import (
 ProgressCallback = Callable[[str], None]
 
 
+def _find_tool_capacity_sheet(workbook):
+    for ws in workbook.worksheets:
+        name=ws.title.lower().strip()
+        if "tool" in name and "capacity" in name:
+            return ws
+    return None
+
+
 def validate_row(row: dict[str, Any]) -> str:
     """Return validation string without stopping processing."""
     missing = [field for field in MANDATORY_FIELDS if is_empty(row.get(field, ""))]
@@ -143,7 +151,13 @@ def process_workbook(
         return result
 
     try:
-        for ws in wb.worksheets:
+        ws = _find_tool_capacity_sheet(wb)
+        if ws is None:
+            result.errors.append(ProcessingError(str(source_file), "", "No Tool Capacity worksheet found", ""))
+            result.processing_seconds = time.perf_counter() - start
+            return result
+
+        try:
             sheet_rows_before = len(result.rows)
             debug_record = DebugRecord(workbook=str(source_file), worksheet=ws.title)
             _log_step(logger, source_file, ws.title, f"Processing worksheet: {ws.title}", progress_callback)
