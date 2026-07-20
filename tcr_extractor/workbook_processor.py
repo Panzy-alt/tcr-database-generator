@@ -167,7 +167,20 @@ def process_workbook(
                 _log_step(logger, source_file, ws.title, "Header finished.", progress_callback)
 
                 _log_step(logger, source_file, ws.title, "Detecting BOM...", progress_callback)
-                header_row, mapping, unmapped_headers, score, reasons, missing_columns = find_bom_table(ws)
+                if logger:
+                    logger.info(
+                        "Worksheet dimensions | workbook=%s | worksheet=%s | rows=%s | cols=%s",
+                        source_file,
+                        ws.title,
+                        ws.max_row,
+                        ws.max_column,
+                    )
+                header_row, mapping, unmapped_headers, score, reasons, missing_columns = find_bom_table(
+                    ws,
+                    logger=logger,
+                    workbook_name=source_file.name,
+                    worksheet_name=ws.title,
+                )
                 _log_step(logger, source_file, ws.title, "BOM detected.", progress_callback)
 
                 debug_record.detected_header_row = detected_header_rows
@@ -195,7 +208,6 @@ def process_workbook(
                             score,
                             "; ".join(reasons),
                         )
-                    _log_step(logger, source_file, ws.title, "Worksheet finished.", progress_callback)
                     continue
 
                 if logger:
